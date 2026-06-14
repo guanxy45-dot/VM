@@ -341,7 +341,7 @@ int lookup(char *name, int line) {
 }
 
 //插入变量符号到符号表
-void insert_symbol(Category_symbol kind, char *name, Type type, int line, int check_errors) {
+void insert_symbol(Category_symbol kind, char *name, Type type, int line, int check_errors, int dim) {
     if (scope_top < 0) {
         add_error("内部错误：未初始化作用域", line, 1);
         return;
@@ -383,7 +383,7 @@ void insert_symbol(Category_symbol kind, char *name, Type type, int line, int ch
     strcpy(sc->items[sc->cnt].name, name);
     sc->items[sc->cnt].kind = kind;
     sc->items[sc->cnt].type = type;
-    sc->items[sc->cnt].dim = 0;        // 初始化数组维数为0（非数组）
+    sc->items[sc->cnt].dim = dim;        // 设置数组维数
     memset(sc->items[sc->cnt].len, 0, sizeof(sc->items[sc->cnt].len));  // 初始化各维长度为0
     sc->items[sc->cnt].param_count = 0;
     sc->items[sc->cnt].local_count = 0;  // 初始化局部变量数量为0
@@ -396,10 +396,12 @@ void insert_symbol(Category_symbol kind, char *name, Type type, int line, int ch
         } else {
             // 局部变量：使用正数地址（从0开始，相对于base）
             sc->items[sc->cnt].address = global_off;
-            global_off++;
+            // 数组占用多个槽位，普通变量占用1个槽位
+            int slots = (dim > 1) ? dim : 1;
+            global_off += slots;
             // 如果是在函数作用域内，增加当前函数的局部变量计数
             if (current_fun != NULL) {
-                current_fun->local_count++;
+                current_fun->local_count += slots;
             }
         }
     } else {
@@ -639,8 +641,8 @@ void trans_while(ASTNode *node) {
     int cx = codesIndex;
     gen_code("BRF",0);
     semantic_translate(node->children[1]);
-    gen_code("BR", lab_cond + 1);  // 使用行号（索引+1）
-    codes[cx].operand = codesIndex + 1;  // BRF跳转到循环后的第一条指令（行号）
+    gen_code("BR",lab_cond + 1);  // 使用行号（索引+1）
+    codes[cx].operand = codesIndex + 1;  // 使用行号（索引+1）
 }
 
 //翻译do-while语句：do { body } while(cond)
@@ -648,17 +650,19 @@ void trans_do_while(ASTNode *node) {
     int lab_body = codesIndex;
     semantic_translate(node->children[0]);
     semantic_translate(node->children[1]);
+    int cx = codesIndex;
     gen_code("BRF",0);
-    int br_pos = codesIndex;
     gen_code("BR", lab_body + 1);  // 使用行号（索引+1）
-    codes[br_pos - 1].operand = codesIndex + 1;  // BRF跳转到循环后的第一条指令（行号）
+    codes[cx].operand = codesIndex + 1;  // 使用行号（索引+1）
 }
 
 //翻译switch语句
 void trans_switch(ASTNode *node) {
     semantic_translate(node->children[0]);  // 计算switch表达式的值（结果在栈顶）
     
-    int temp_addr = scope_stack[scope_top].cnt + 1;
+    // 使用全局偏移量分配临时变量地址
+    int temp_addr = global_off;
+    global_off++;  // 临时变量占用1个槽位
     gen_code("STO", temp_addr);  // 保存switch表达式值到临时位置
     
     // 第一遍：收集case和default的信息
@@ -678,16 +682,20 @@ void trans_switch(ASTNode *node) {
         ASTNode *case_node = node->children[i];
         if (case_node->type == AST_CASE_STMT) {
             // 生成case比较代码
-            case_match_addrs[case_count] = codesIndex;
-            // 对于第一个case，直接使用栈顶的值，不需要重新LOAD
+            // 第一个case：栈顶已经有switch表达式的值，直接生成case常量和比较
             if (case_count == 0) {
-                // 栈顶已经有switch表达式的值
+                case_match_addrs[case_count] = codesIndex;  // 记录case常量加载位置
+                semantic_translate(case_node->children[0]);  // 加载case常量
+                gen_code("EQ", 0);                    // 比较
+                gen_code("BRF", 0);                   // 不匹配则跳转
             } else {
-                gen_code("LOAD", temp_addr);          // 加载switch表达式值
+                // 后续case需要重新加载switch表达式值
+                case_match_addrs[case_count] = codesIndex;
+                gen_code("LOAD", temp_addr);          // 重新加载switch表达式值
+                semantic_translate(case_node->children[0]);  // 加载case常量
+                gen_code("EQ", 0);                    // 比较
+                gen_code("BRF", 0);                   // 不匹配则跳转
             }
-            semantic_translate(case_node->children[0]);  // 加载case常量
-            gen_code("EQ", 0);                    // 比较
-            gen_code("BRF", 0);                   // 不匹配则跳转（目标稍后回填）
             
             // case body起始地址
             case_body_addrs[case_count] = codesIndex;
@@ -741,15 +749,17 @@ void trans_switch(ASTNode *node) {
     
     // 回填BRF跳转目标：不匹配时跳转到下一个case的match或default或switch结束（使用行号）
     for (int i = 0; i < case_count; i++) {
-        int brf_addr = case_match_addrs[i] + 3;  // BRF指令的地址
+        // BRF指令的地址：第一个case有2条指令(EQ, BRF)，后续case有3条指令(LOAD, EQ, BRF)
+        // 索引从0开始，BRF在第2个位置（第一个case）或第3个位置（后续case）
+        int brf_addr = case_match_addrs[i] + (i == 0 ? 2 : 3);
         if (i < case_count - 1) {
-            // 跳转到下一个case的match（行号=索引+1）
+            // 跳转到下一个case的match
             codes[brf_addr].operand = case_match_addrs[i + 1] + 1;
         } else if (default_addr >= 0) {
-            // 跳转到default（行号=索引+1）
+            // 跳转到default
             codes[brf_addr].operand = default_addr + 1;
         } else {
-            // 跳转到switch结束（行号=索引+1）
+            // 跳转到switch结束
             codes[brf_addr].operand = switch_end_addr + 1;
         }
     }
@@ -767,13 +777,13 @@ void trans_switch(ASTNode *node) {
         
         if (case_idx >= 0) {
             if (case_idx < case_count - 1) {
-                // 跳转到下一个case的body（行号=索引+1）
+                // 跳转到下一个case的body
                 codes[fallthrough_addrs[i]].operand = case_body_addrs[case_idx + 1] + 1;
             } else if (default_addr >= 0) {
-                // 跳转到default（行号=索引+1）
+                // 跳转到default
                 codes[fallthrough_addrs[i]].operand = default_addr + 1;
             } else {
-                // 跳转到switch结束（行号=索引+1）
+                // 跳转到switch结束
                 codes[fallthrough_addrs[i]].operand = switch_end_addr + 1;
             }
         }
@@ -916,7 +926,7 @@ void trans_fun_decl(ASTNode *node) {
         SymbolItem *temp_current_fun = current_fun;
         current_fun = NULL;
         for (int i = 0; i < param_count; i++) {
-            insert_symbol(SYM_VARIABLE, param_names[i], param_types[i], node->line, 0);
+            insert_symbol(SYM_VARIABLE, param_names[i], param_types[i], node->line, 0, 1);
             // 参数从右到左入栈：第一个参数在栈底（偏移量大），最后一个在栈顶（偏移量小）
             // 第一个参数对应偏移量 -param_count，最后一个对应偏移量 -1
             SymbolItem *item = lookup_symbol(param_names[i], node->line, 0);
@@ -1004,7 +1014,7 @@ void semantic_translate(ASTNode *node) {
                 }
             }
             //变量声明：符号表插入（语义分析阶段，进行错误检测）
-            insert_symbol(SYM_VARIABLE, node->value, var_type, node->line, 1);
+            insert_symbol(SYM_VARIABLE, node->value, var_type, node->line, 1, 1);
             //带初始化：var a:int=10;
             if(node->child_count>=2){
                 Type init_type = infer_type(node->children[1]);
@@ -1042,7 +1052,7 @@ void semantic_translate(ASTNode *node) {
             }
             
             // 插入数组符号（使用dim字段标记为数组）
-            insert_symbol(SYM_VARIABLE, node->value, arr_type, node->line, arr_size);
+            insert_symbol(SYM_VARIABLE, node->value, arr_type, node->line, 1, arr_size);
             
             break;
         }
@@ -1168,21 +1178,16 @@ void semantic_translate(ASTNode *node) {
                     }
                 }
                 
-                // 中间代码第一句：无条件跳转到main函数入口（放在全局变量初始化之前）
-                int br_main_pos = codesIndex;
-                gen_code("BR", 0);  // 操作数暂时为0，稍后回填
-                
-                // 翻译全局变量声明（生成初始化代码，放在BR指令后面）
-                for(int i=0; i<global_var_count; i++) {
-                    semantic_translate(global_vars[i]);
-                }
-                
                 // 先插入所有函数符号到符号表，不翻译，只是占位
                 for(int i=0; i<func_count; i++) {
                     int prev_err = semantic_err;
-                    insert_symbol(SYM_FUNCTION, funcs[i]->value, TYPE_VOID, funcs[i]->line, 1);
+                    insert_symbol(SYM_FUNCTION, funcs[i]->value, TYPE_VOID, funcs[i]->line, 1, 0);
                     // 如果有错误，不插入
                 }
+                
+                // 中间代码第一句：无条件跳转到main函数入口（跳过所有函数代码）
+                int br_main_pos = codesIndex;
+                gen_code("BR", 0);  // 操作数暂时为0，稍后回填
                 
                 // 翻译所有函数（生成中间代码，包括ENTER）
                 for(int i=0; i<func_count; i++) {
@@ -1217,14 +1222,26 @@ void semantic_translate(ASTNode *node) {
                     gen_code("ENTER", 0);
                     
                     // 记录main函数的入口地址（用于回填BR指令）
-                    main_entry = codesIndex;  // ENTER刚生成，codesIndex是下一条指令索引，也是ENTER的行号
+                    main_entry = codesIndex - 1;  // 指向ENTER指令
                     
                     // 保存当前global_off，main函数内部使用相对地址从0开始
                     int saved_global_off = global_off;
                     global_off = 0;
                     
+                    // 在main函数体的开头翻译全局变量声明（初始化代码）
+                    // 全局变量使用全局作用域（scope_top = 0）
+                    for(int i=0; i<global_var_count; i++) {
+                        semantic_translate(global_vars[i]);
+                    }
+                    
+                    // 进入函数作用域（用于正确统计局部变量）
+                    scope_enter();
+                    
                     // 翻译main函数体
                     semantic_translate(main_node);
+                    
+                    // 离开函数作用域
+                    scope_leave();
                     
                     // 恢复global_off
                     global_off = saved_global_off;
@@ -1240,8 +1257,8 @@ void semantic_translate(ASTNode *node) {
                 // 在main函数结束后添加STOP指令
                 gen_code("STOP", 0);
                 
-                // 回填BR指令的操作数（main函数入口地址）
-                codes[br_main_pos].operand = main_entry;
+                // 回填BR指令的操作数（main函数入口地址，转换为行号）
+                codes[br_main_pos].operand = main_entry + 1;
             }
             break;
         }
@@ -1706,7 +1723,7 @@ static ASTNode* program() {
             match(TOKEN_ID);
             // 手动创建 main 节点
             ASTNode *main_node = create_ast_node(AST_MAIN_DECL, "main", first_token.line, first_token.column);
-            insert_symbol(SYM_FUNCTION, "main", TYPE_VOID, first_token.line, 0);
+            insert_symbol(SYM_FUNCTION, "main", TYPE_VOID, first_token.line, 0, 0);
             match(TOKEN_LPAREN);
             while (current_token().type == TOKEN_ID) {
                 match(TOKEN_ID);
@@ -1784,7 +1801,7 @@ static ASTNode* main_declaration() {
     match(TOKEN_MAIN);
 
     ASTNode *node = create_ast_node(AST_MAIN_DECL, "main", main_token.line, main_token.column);
-    insert_symbol(SYM_FUNCTION,"main", TYPE_VOID, main_token.line, 0);
+    insert_symbol(SYM_FUNCTION,"main", TYPE_VOID, main_token.line, 0, 0);
 
     match(TOKEN_LPAREN);
     // 参数列表
@@ -2043,7 +2060,7 @@ static ASTNode* for_stat() {
     Token id_token = current_token();
     match(TOKEN_ID);
     // 自动插入for循环变量（语法分析阶段，不做错误检测）
-    insert_symbol(SYM_VARIABLE, id_token.value, TYPE_INT, id_token.line, 0);
+    insert_symbol(SYM_VARIABLE, id_token.value, TYPE_INT, id_token.line, 0, 1);
     add_ast_child(node, create_ast_node(AST_IDENTIFIER, id_token.value, id_token.line, id_token.column));
     match(TOKEN_IN);
     add_ast_child(node, expression());
