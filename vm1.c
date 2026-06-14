@@ -1618,7 +1618,7 @@ int lexical_analysis(const char *input_filename, const char *output_filename) {
         printf("无词法错误\n");
     }
 
-    printf("\n✅ 词法分析完成，结果已保存到: %s\n", output_filename);
+    printf("\n词法分析完成，结果已保存到: %s\n", output_filename);
     return error_count > 0 ? 1 : 0;
 }
 
@@ -2418,7 +2418,7 @@ int syntax_analysis(const char *output_filename, const char *base_name) {
         printf("无语法错误\n");
     }
 
-    printf("✅ 语法分析完成，AST已保存到: %s\n", output_filename);
+    printf("语法分析完成，AST已保存到: %s\n", output_filename);
 
     FILE *ast_file = fopen(output_filename, "w");
     if (!ast_file) {
@@ -2450,7 +2450,7 @@ int syntax_analysis(const char *output_filename, const char *base_name) {
     }
     fclose(fpcode);
 
-    printf("✅ 语义分析完成，结果已保存\n");
+    printf("语义分析完成，结果已保存\n");
     printf("  汇编中间代码：%s\n",code_name);
 
     free_ast(root);
@@ -2540,13 +2540,13 @@ int main(int argc, char *argv[]) {
     // 词法分析（即使有错误也继续）
     int lex_result = lexical_analysis(input_filename, tokens_filename);
     if (lex_result != 0) {
-        printf("\n⚠️ 词法分析存在错误，但继续进行语法分析...\n");
+        printf("\n⚠️ 词法分析存在错误...\n");
     }
 
     // 语法+语义分析，传入基础名用于生成语义文件
     int parse_result = syntax_analysis(ast_filename, base_name);
     if (parse_result != 0) {
-        printf("\n⚠️ 分析存在错误，跳过虚拟机执行\n");
+        printf("\n⚠️ 语法或语义分析存在错误...\n");
         // 释放内存
         free(tokens_filename);
         free(ast_filename);
