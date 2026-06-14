@@ -622,14 +622,14 @@ void trans_if(ASTNode *node) {
     semantic_translate(stmt1);
     int br_pos = codesIndex;
     gen_code("BR",0);
-    //回填BRF跳转地址
-    codes[brf_pos].operand = codesIndex;
+    //回填BRF跳转地址（使用行号）
+    codes[brf_pos].operand = codesIndex + 1;
     //存在else
     if(node->child_count ==3){
         semantic_translate(node->children[2]);
     }
-    //回填BR跳转地址
-    codes[br_pos].operand = codesIndex;
+    //回填BR跳转地址（使用行号）
+    codes[br_pos].operand = codesIndex + 1;
 }
 
 //翻译while语句
@@ -639,8 +639,8 @@ void trans_while(ASTNode *node) {
     int cx = codesIndex;
     gen_code("BRF",0);
     semantic_translate(node->children[1]);
-    gen_code("BR",lab_cond);
-    codes[cx].operand = codesIndex;
+    gen_code("BR",lab_cond + 1);  // 使用行号
+    codes[cx].operand = codesIndex + 1;  // 使用行号
 }
 
 //翻译do-while语句：do { body } while(cond)
@@ -650,8 +650,8 @@ void trans_do_while(ASTNode *node) {
     semantic_translate(node->children[1]);
     int cx = codesIndex;
     gen_code("BRF",0);
-    gen_code("BR", lab_body);
-    codes[cx].operand = codesIndex;
+    gen_code("BR", lab_body + 1);  // 使用行号
+    codes[cx].operand = codesIndex + 1;  // 使用行号
 }
 
 //翻译switch语句
@@ -734,22 +734,22 @@ void trans_switch(ASTNode *node) {
     
     int switch_end_addr = codesIndex;
     
-    // 回填BRF跳转目标：不匹配时跳转到下一个case的match或default或switch结束
+    // 回填BRF跳转目标：不匹配时跳转到下一个case的match或default或switch结束（使用行号）
     for (int i = 0; i < case_count; i++) {
         int brf_addr = case_match_addrs[i] + 3;  // BRF指令的地址
         if (i < case_count - 1) {
-            // 跳转到下一个case的match
-            codes[brf_addr].operand = case_match_addrs[i + 1];
+            // 跳转到下一个case的match（行号=索引+1）
+            codes[brf_addr].operand = case_match_addrs[i + 1] + 1;
         } else if (default_addr >= 0) {
-            // 跳转到default
-            codes[brf_addr].operand = default_addr;
+            // 跳转到default（行号=索引+1）
+            codes[brf_addr].operand = default_addr + 1;
         } else {
-            // 跳转到switch结束
-            codes[brf_addr].operand = switch_end_addr;
+            // 跳转到switch结束（行号=索引+1）
+            codes[brf_addr].operand = switch_end_addr + 1;
         }
     }
     
-    // 回填穿透BR跳转目标：跳转到下一个case的body或default
+    // 回填穿透BR跳转目标：跳转到下一个case的body或default（使用行号）
     for (int i = 0; i < fallthrough_count; i++) {
         // 找到这个穿透BR属于哪个case
         int case_idx = -1;
@@ -762,21 +762,21 @@ void trans_switch(ASTNode *node) {
         
         if (case_idx >= 0) {
             if (case_idx < case_count - 1) {
-                // 跳转到下一个case的body
-                codes[fallthrough_addrs[i]].operand = case_body_addrs[case_idx + 1];
+                // 跳转到下一个case的body（行号=索引+1）
+                codes[fallthrough_addrs[i]].operand = case_body_addrs[case_idx + 1] + 1;
             } else if (default_addr >= 0) {
-                // 跳转到default
-                codes[fallthrough_addrs[i]].operand = default_addr;
+                // 跳转到default（行号=索引+1）
+                codes[fallthrough_addrs[i]].operand = default_addr + 1;
             } else {
-                // 跳转到switch结束
-                codes[fallthrough_addrs[i]].operand = switch_end_addr;
+                // 跳转到switch结束（行号=索引+1）
+                codes[fallthrough_addrs[i]].operand = switch_end_addr + 1;
             }
         }
     }
     
-    // 回填所有break跳转目标：跳转到switch结束
+    // 回填所有break跳转目标：跳转到switch结束（使用行号）
     for (int i = 0; i < break_count; i++) {
-        codes[break_addrs[i]].operand = switch_end_addr;
+        codes[break_addrs[i]].operand = switch_end_addr + 1;
     }
 }
 
@@ -812,11 +812,11 @@ void trans_for(ASTNode *node) {
         semantic_translate(node->children[2]);
     }
     
-    // 7. 跳转回条件检查
-    gen_code("BR", lab_cond);
+    // 7. 跳转回条件检查（使用行号）
+    gen_code("BR", lab_cond + 1);
     
-    // 8. 回填BRF的目标地址
-    codes[cx_brf].operand = codesIndex;
+    // 8. 回填BRF的目标地址（使用行号）
+    codes[cx_brf].operand = codesIndex + 1;
 }
 
 //翻译函数调用：参数入栈 -> CAL函数调用 -> 结果在栈顶
@@ -1211,8 +1211,8 @@ void semantic_translate(ASTNode *node) {
                     int main_enter_pos = codesIndex;
                     gen_code("ENTER", 0);
                     
-                    // 记录main函数的入口地址（用于回填BR指令）
-                    main_entry = codesIndex - 1;  // 指向ENTER指令
+                    // 记录main函数的入口地址（用于回填BR指令，使用行号）
+                    main_entry = codesIndex;  // 指向ENTER指令的行号（索引+1）
                     
                     // 保存当前global_off，main函数内部使用相对地址从0开始
                     int saved_global_off = global_off;
@@ -2678,13 +2678,13 @@ void execute_vm() {
             int b = pop(); int a = pop();
             if (b == 0) { printf("错误：除零错误！\n"); return; }
             push(a / b); vm.pc++;
-        } else if (strcmp(opt, "BR") == 0) { vm.pc = operand; }
+        } else if (strcmp(opt, "BR") == 0) { vm.pc = operand - 1; }  // 行号转索引
         else if (strcmp(opt, "BRF") == 0) {
             int condition = pop();
-            vm.pc = (condition == 0) ? operand : vm.pc + 1;
+            vm.pc = (condition == 0) ? operand - 1 : vm.pc + 1;  // 行号转索引
         } else if (strcmp(opt, "BRT") == 0) {
             int condition = pop();
-            vm.pc = (condition != 0) ? operand : vm.pc + 1;
+            vm.pc = (condition != 0) ? operand - 1 : vm.pc + 1;  // 行号转索引
         } else if (strcmp(opt, "EQ") == 0) { int b = pop(); int a = pop(); push(a == b ? 1 : 0); vm.pc++; }
         else if (strcmp(opt, "NOTEQ") == 0) { int b = pop(); int a = pop(); push(a != b ? 1 : 0); vm.pc++; }
         else if (strcmp(opt, "GT") == 0) { int b = pop(); int a = pop(); push(a > b ? 1 : 0); vm.pc++; }
