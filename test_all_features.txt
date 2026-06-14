@@ -1,0 +1,87 @@
+// 功能5: 全局变量（在所有函数外部声明）
+var global_var: int = 100
+
+// 功能1: 带参数和返回值的函数
+func add(a: int, b: int): int {
+    var temp: int = a + b  // 测试：同一函数内变量名不能相同
+    return temp
+}
+
+func multiply(a: int, b: int): int {
+    var temp: int = a * b  // 测试：不同函数的变量名可以相同
+    return temp
+}
+
+main() {
+    // 功能6: 变量声明和初始化
+    var num1: int = 10
+    var num2: int = 20
+    var num3: int = 30
+    
+    // 测试全局变量（功能5）
+    write global_var
+    global_var = global_var + 50  // 修改全局变量
+    write global_var
+    
+    // 测试变量初始化
+    write num1
+    write num2
+    write num3
+    
+    // 功能3,4: 带参数和返回值的函数调用
+    var sum_result: int = add(num1, num2)
+    write sum_result
+    
+    var product_result: int = multiply(num2, num3)
+    write product_result
+    
+    // 功能1: do-while循环
+    var counter: int = 0
+    do {
+        write counter
+        counter = counter + 1
+    } while (counter < 4)
+    
+    // 测试更多操作
+    var total: int = sum_result + product_result
+    write total
+    
+    // 功能7: 一维数组测试
+    var arr: int[5]
+    arr[0] = 100
+    arr[1] = 200
+    arr[2] = 300
+    write arr[0]
+    write arr[1]
+    write arr[2]
+
+    // 功能1: switch语句测试
+    var choice: int = 3
+    switch (choice) {
+        case 1:
+            write 100
+            break
+        case 2:
+            write 200
+            break
+        case 3:
+            write 300
+            break
+        default:
+            write 0
+    }
+    
+    // 测试switch穿透（无break）
+    var choice2: int = 1
+    switch (choice2) {
+        case 1:
+            write 111
+        case 2:
+            write 222
+            break
+        default:
+            write 999
+    }
+}
+
+

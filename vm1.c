@@ -639,8 +639,8 @@ void trans_while(ASTNode *node) {
     int cx = codesIndex;
     gen_code("BRF",0);
     semantic_translate(node->children[1]);
-    gen_code("BR",lab_cond + 1);  // 使用行号
-    codes[cx].operand = codesIndex + 1;  // 使用行号
+    gen_code("BR", lab_cond + 1);  // 使用行号（索引+1）
+    codes[cx].operand = codesIndex + 1;  // BRF跳转到循环后的第一条指令（行号）
 }
 
 //翻译do-while语句：do { body } while(cond)
@@ -648,15 +648,15 @@ void trans_do_while(ASTNode *node) {
     int lab_body = codesIndex;
     semantic_translate(node->children[0]);
     semantic_translate(node->children[1]);
-    int cx = codesIndex;
     gen_code("BRF",0);
-    gen_code("BR", lab_body + 1);  // 使用行号
-    codes[cx].operand = codesIndex + 1;  // 使用行号
+    int br_pos = codesIndex;
+    gen_code("BR", lab_body + 1);  // 使用行号（索引+1）
+    codes[br_pos - 1].operand = codesIndex + 1;  // BRF跳转到循环后的第一条指令（行号）
 }
 
 //翻译switch语句
 void trans_switch(ASTNode *node) {
-    semantic_translate(node->children[0]);  // 计算switch表达式的值
+    semantic_translate(node->children[0]);  // 计算switch表达式的值（结果在栈顶）
     
     int temp_addr = scope_stack[scope_top].cnt + 1;
     gen_code("STO", temp_addr);  // 保存switch表达式值到临时位置
@@ -679,7 +679,12 @@ void trans_switch(ASTNode *node) {
         if (case_node->type == AST_CASE_STMT) {
             // 生成case比较代码
             case_match_addrs[case_count] = codesIndex;
-            gen_code("LOAD", temp_addr);          // 加载switch表达式值
+            // 对于第一个case，直接使用栈顶的值，不需要重新LOAD
+            if (case_count == 0) {
+                // 栈顶已经有switch表达式的值
+            } else {
+                gen_code("LOAD", temp_addr);          // 加载switch表达式值
+            }
             semantic_translate(case_node->children[0]);  // 加载case常量
             gen_code("EQ", 0);                    // 比较
             gen_code("BRF", 0);                   // 不匹配则跳转（目标稍后回填）
@@ -1163,14 +1168,14 @@ void semantic_translate(ASTNode *node) {
                     }
                 }
                 
-                // 先翻译全局变量声明（生成初始化代码）
+                // 中间代码第一句：无条件跳转到main函数入口（放在全局变量初始化之前）
+                int br_main_pos = codesIndex;
+                gen_code("BR", 0);  // 操作数暂时为0，稍后回填
+                
+                // 翻译全局变量声明（生成初始化代码，放在BR指令后面）
                 for(int i=0; i<global_var_count; i++) {
                     semantic_translate(global_vars[i]);
                 }
-                
-                // 中间代码第一句：无条件跳转到main函数入口（放在全局变量初始化之后）
-                int br_main_pos = codesIndex;
-                gen_code("BR", 0);  // 操作数暂时为0，稍后回填
                 
                 // 先插入所有函数符号到符号表，不翻译，只是占位
                 for(int i=0; i<func_count; i++) {
@@ -1211,8 +1216,8 @@ void semantic_translate(ASTNode *node) {
                     int main_enter_pos = codesIndex;
                     gen_code("ENTER", 0);
                     
-                    // 记录main函数的入口地址（用于回填BR指令，使用行号）
-                    main_entry = codesIndex;  // 指向ENTER指令的行号（索引+1）
+                    // 记录main函数的入口地址（用于回填BR指令）
+                    main_entry = codesIndex;  // ENTER刚生成，codesIndex是下一条指令索引，也是ENTER的行号
                     
                     // 保存当前global_off，main函数内部使用相对地址从0开始
                     int saved_global_off = global_off;
