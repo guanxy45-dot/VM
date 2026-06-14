@@ -2704,14 +2704,17 @@ void execute_vm() {
         else if (strcmp(opt, "ENTER") == 0) {
             int param_count = operand / 1000;
             int local_count = operand % 1000;
+            // 保存旧base
             vm.data[vm.data_top] = vm.base;
             vm.base = vm.data_top;
             vm.data_top++;
+            // 先为局部变量分配空间
+            for (int i = 0; i < local_count; i++) vm.data[vm.data_top++] = 0;
+            // 再存储参数（从调用者栈中弹出）
             for (int i = param_count - 1; i >= 0; i--) {
                 int arg = pop();
                 vm.data[vm.base - param_count + i] = arg;
             }
-            for (int i = 0; i < local_count; i++) vm.data[vm.data_top++] = 0;
             vm.pc++;
         } else if (strcmp(opt, "LEAVE") == 0) {
             vm.base = vm.data[vm.base];
