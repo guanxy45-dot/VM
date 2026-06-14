@@ -66,7 +66,7 @@ typedef enum {
     AST_FOR_STMT, AST_SWITCH_STMT, AST_CASE_STMT, AST_DEFAULT_STMT,
     AST_COMPOUND_STMT, AST_EXPR_STMT, AST_ASSIGN_EXPR,
     AST_BINARY_EXPR, AST_IDENTIFIER, AST_NUM_LITERAL, AST_STRING_LITERAL,
-    AST_READ_STMT, AST_WRITE_STMT,
+    AST_READ_STMT, AST_WRITE_STMT, AST_BREAK_STMT, AST_CONTINUE_STMT,
     AST_FUNC_CALL, AST_RETURN_STMT, AST_ARRAY_DECL, AST_ARRAY_ACCESS
 } ASTNodeType;
 
@@ -654,6 +654,132 @@ void trans_do_while(ASTNode *node) {
     codes[cx].operand = codesIndex;
 }
 
+//翻译switch语句
+void trans_switch(ASTNode *node) {
+    semantic_translate(node->children[0]);  // 计算switch表达式的值
+    
+    int temp_addr = scope_stack[scope_top].cnt + 1;
+    gen_code("STO", temp_addr);  // 保存switch表达式值到临时位置
+    
+    // 第一遍：收集case和default的信息
+    int case_match_addrs[100];   // 每个case比较代码的起始地址
+    int case_body_addrs[100];    // 每个case body的起始地址
+    int case_end_addrs[100];     // 每个case body结束后的地址（用于穿透）
+    int case_has_break[100];     // 每个case是否有break
+    int case_count = 0;
+    int default_addr = -1;
+    int default_end_addr = -1;
+    int break_addrs[100];        // 真正的break指令的地址
+    int break_count = 0;
+    int fallthrough_addrs[100];  // 穿透BR指令的地址
+    int fallthrough_count = 0;
+    
+    for (int i = 1; i < node->child_count; i++) {
+        ASTNode *case_node = node->children[i];
+        if (case_node->type == AST_CASE_STMT) {
+            // 生成case比较代码
+            case_match_addrs[case_count] = codesIndex;
+            gen_code("LOAD", temp_addr);          // 加载switch表达式值
+            semantic_translate(case_node->children[0]);  // 加载case常量
+            gen_code("EQ", 0);                    // 比较
+            gen_code("BRF", 0);                   // 不匹配则跳转（目标稍后回填）
+            
+            // case body起始地址
+            case_body_addrs[case_count] = codesIndex;
+            case_has_break[case_count] = 0;
+            
+            // 生成case body代码
+            // case的children[1]是statements节点（AST_COMPOUND_STMT）
+            ASTNode *stmts = case_node->children[1];
+            for (int j = 0; j < stmts->child_count; j++) {
+                ASTNode *child = stmts->children[j];
+                if (child->type == AST_BREAK_STMT) {
+                    case_has_break[case_count] = 1;
+                    gen_code("BR", 0);            // break跳转（目标稍后回填）
+                    break_addrs[break_count++] = codesIndex - 1;
+                } else {
+                    semantic_translate(child);
+                }
+            }
+            
+            // case body结束地址
+            case_end_addrs[case_count] = codesIndex;
+            
+            // 如果没有break，生成穿透跳转（目标稍后回填）
+            if (!case_has_break[case_count]) {
+                gen_code("BR", 0);
+                fallthrough_addrs[fallthrough_count++] = codesIndex - 1;
+            }
+            
+            case_count++;
+        } else if (case_node->type == AST_DEFAULT_STMT) {
+            default_addr = codesIndex;
+            
+            // 生成default body代码
+            // default的children[0]是statements节点（AST_COMPOUND_STMT）
+            ASTNode *stmts = case_node->children[0];
+            for (int j = 0; j < stmts->child_count; j++) {
+                ASTNode *child = stmts->children[j];
+                if (child->type == AST_BREAK_STMT) {
+                    gen_code("BR", 0);
+                    break_addrs[break_count++] = codesIndex - 1;
+                } else {
+                    semantic_translate(child);
+                }
+            }
+            
+            default_end_addr = codesIndex;
+        }
+    }
+    
+    int switch_end_addr = codesIndex;
+    
+    // 回填BRF跳转目标：不匹配时跳转到下一个case的match或default或switch结束
+    for (int i = 0; i < case_count; i++) {
+        int brf_addr = case_match_addrs[i] + 3;  // BRF指令的地址
+        if (i < case_count - 1) {
+            // 跳转到下一个case的match
+            codes[brf_addr].operand = case_match_addrs[i + 1];
+        } else if (default_addr >= 0) {
+            // 跳转到default
+            codes[brf_addr].operand = default_addr;
+        } else {
+            // 跳转到switch结束
+            codes[brf_addr].operand = switch_end_addr;
+        }
+    }
+    
+    // 回填穿透BR跳转目标：跳转到下一个case的body或default
+    for (int i = 0; i < fallthrough_count; i++) {
+        // 找到这个穿透BR属于哪个case
+        int case_idx = -1;
+        for (int j = 0; j < case_count; j++) {
+            if (fallthrough_addrs[i] == case_end_addrs[j]) {
+                case_idx = j;
+                break;
+            }
+        }
+        
+        if (case_idx >= 0) {
+            if (case_idx < case_count - 1) {
+                // 跳转到下一个case的body
+                codes[fallthrough_addrs[i]].operand = case_body_addrs[case_idx + 1];
+            } else if (default_addr >= 0) {
+                // 跳转到default
+                codes[fallthrough_addrs[i]].operand = default_addr;
+            } else {
+                // 跳转到switch结束
+                codes[fallthrough_addrs[i]].operand = switch_end_addr;
+            }
+        }
+    }
+    
+    // 回填所有break跳转目标：跳转到switch结束
+    for (int i = 0; i < break_count; i++) {
+        codes[break_addrs[i]].operand = switch_end_addr;
+    }
+}
+
 //翻译for语句：for(init; cond; update) { body }
 void trans_for(ASTNode *node) {
     // for循环通常有3个子节点：初始化、条件、更新，然后是循环体
@@ -709,8 +835,8 @@ void trans_call(ASTNode *node) {
     
     // 2. CAL func_name：函数调用
     // 在栈式抽象机中，CAL指令会自动处理栈帧
-    // 查找函数符号的地址！
-    SymbolItem *func_item = lookup_symbol(node->value, node->line, 1);  // 修改为1，启用错误报告
+    // 查找函数符号的地址！（不重复报告错误，因为check_function_call已经报告过了）
+    SymbolItem *func_item = lookup_symbol(node->value, node->line, 0);
     int func_addr = 0;
     if (func_item != NULL) {
         func_addr = func_item->address;
@@ -981,6 +1107,23 @@ void semantic_translate(ASTNode *node) {
             loop_nest_level++;
             trans_for(node);
             loop_nest_level--;
+            break;
+        case AST_SWITCH_STMT:
+            in_switch = 1;
+            trans_switch(node);
+            in_switch = 0;
+            break;
+        case AST_BREAK_STMT:
+            if (loop_nest_level == 0 && !in_switch) {
+                add_error("语义错误：break语句不在循环或switch中", node->line, 1);
+                semantic_err++;
+            }
+            break;
+        case AST_CONTINUE_STMT:
+            if (loop_nest_level == 0) {
+                add_error("语义错误：continue语句不在循环中", node->line, 1);
+                semantic_err++;
+            }
             break;
         case AST_RETURN_STMT:
             // return语句：翻译返回表达式（如果有）
@@ -1514,7 +1657,7 @@ static ASTNode* fun_body();// 函数体
 static ASTNode* declaration_list();
 static ASTNode* declaration_stat();
 static ASTNode* statement_list();
-static ASTNode* statement();// 语句（if/while/for/switch/变量/read/write/return）
+static ASTNode* statement();// 语句（if/while/for/变量/read/write/break/continue/return）
 static ASTNode* if_stat();
 static ASTNode* while_stat();
 static ASTNode* do_while_stat();
@@ -1522,6 +1665,8 @@ static ASTNode* for_stat();
 static ASTNode* switch_stat();
 static ASTNode* read_stat();// read语句
 static ASTNode* write_stat();// write语句
+static ASTNode* break_stat();// break语句
+static ASTNode* continue_stat();// continue语句
 static ASTNode* return_stat();// return语句
 static ASTNode* expression_stat();
 static ASTNode* expression();// 表达式（加减乘除/赋值）
@@ -1828,6 +1973,10 @@ static ASTNode* statement() {
             return read_stat();
         case TOKEN_WRITE:
             return write_stat();
+        case TOKEN_BREAK:
+            return break_stat();
+        case TOKEN_CONTINUE:
+            return continue_stat();
         case TOKEN_RETURN:
             return return_stat();
         case TOKEN_LBRACE: {
@@ -1921,6 +2070,41 @@ static ASTNode* do_while_stat() {
     return node;
 }
 
+// switch语句
+static ASTNode* switch_stat() {
+    Token switch_token = current_token();
+    match(TOKEN_SWITCH);
+
+    ASTNode *node = create_ast_node(AST_SWITCH_STMT, "switch", switch_token.line, switch_token.column);
+
+    match(TOKEN_LPAREN);
+    add_ast_child(node, expression());
+    match(TOKEN_RPAREN);
+
+    match(TOKEN_LBRACE);
+    
+    while (current_token().type == TOKEN_CASE || current_token().type == TOKEN_DEFAULT) {
+        if (current_token().type == TOKEN_CASE) {
+            match(TOKEN_CASE);
+            ASTNode *case_node = create_ast_node(AST_CASE_STMT, "case", current_token().line, current_token().column);
+            add_ast_child(case_node, expression());
+            match(TOKEN_COLON);
+            add_ast_child(case_node, statement_list());
+            add_ast_child(node, case_node);
+        } else if (current_token().type == TOKEN_DEFAULT) {
+            match(TOKEN_DEFAULT);
+            ASTNode *default_node = create_ast_node(AST_DEFAULT_STMT, "default", current_token().line, current_token().column);
+            match(TOKEN_COLON);
+            add_ast_child(default_node, statement_list());
+            add_ast_child(node, default_node);
+        }
+    }
+
+    match(TOKEN_RBRACE);
+
+    return node;
+}
+
 // read语句实现
 static ASTNode* read_stat() {
     Token read_token = current_token();
@@ -1952,6 +2136,36 @@ static ASTNode* write_stat() {
     ASTNode *node = create_ast_node(AST_WRITE_STMT, "write", write_token.line, write_token.column);
 
     add_ast_child(node, expression());
+
+    // 可选分号（按照语法规则{;}）
+    if (current_token().type == TOKEN_SEMICOLON) {
+        match(TOKEN_SEMICOLON);
+    }
+
+    return node;
+}
+
+// break语句实现
+static ASTNode* break_stat() {
+    Token break_token = current_token();
+    match(TOKEN_BREAK);
+
+    ASTNode *node = create_ast_node(AST_BREAK_STMT, "break", break_token.line, break_token.column);
+
+    // 可选分号（按照语法规则{;}）
+    if (current_token().type == TOKEN_SEMICOLON) {
+        match(TOKEN_SEMICOLON);
+    }
+
+    return node;
+}
+
+// continue语句实现
+static ASTNode* continue_stat() {
+    Token continue_token = current_token();
+    match(TOKEN_CONTINUE);
+
+    ASTNode *node = create_ast_node(AST_CONTINUE_STMT, "continue", continue_token.line, continue_token.column);
 
     // 可选分号（按照语法规则{;}）
     if (current_token().type == TOKEN_SEMICOLON) {
@@ -2119,7 +2333,11 @@ static ASTNode* factor() {
             advance();
             return create_ast_node(AST_STRING_LITERAL, token.value, token.line, token.column);
         default:
-            if (token.type == TOKEN_RPAREN || token.type == TOKEN_RBRACE || 
+            if (token.type == TOKEN_ERROR) {
+                // 词法错误已经在词法分析阶段报告过了，这里不再重复报告
+                advance();
+                return create_ast_node(AST_NUM_LITERAL, "0", token.line, token.column);
+            } else if (token.type == TOKEN_RPAREN || token.type == TOKEN_RBRACE || 
                 token.type == TOKEN_EOF || token.type == TOKEN_COMMA ||
                 token.type == TOKEN_SEMICOLON) {
                 char err_msg[200];
